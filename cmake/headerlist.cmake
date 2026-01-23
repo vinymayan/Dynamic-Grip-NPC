@@ -8,4 +8,8 @@ set(headers ${headers}
 	include/Hooks.h
 	include/MCP.h
 	include/Serialization.h
+	include/OAR/OpenAnimationReplacerAPI-Animations.h
+	include/OAR/OpenAnimationReplacerAPI-Conditions.h
+	include/OAR/OpenAnimationReplacerAPI-UI.h
+	include/OAR/OpenAnimationReplacer-ConditionTypes.h
 )
