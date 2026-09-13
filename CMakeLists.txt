@@ -1,12 +1,15 @@
-
+﻿
 if(NOT DEFINED ENV{COMMONLIB_SSE_FOLDER})
   message(FATAL_ERROR "Missing COMMONLIB_SSE_FOLDER environment variable")
 endif()
 
-include(cmake/headerlist.cmake)
-include(cmake/sourcelist.cmake)
 include(cmake/lib/copyOutputs.cmake)
 include(cmake/lib/automaticGameFolderOutput.cmake)
+include(cmake/lib/autoCollectSources.cmake)
+
+add_src_folder(src)
+add_src_folder(include/OAR)
+add_include_folder(include)
 
 list(APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
 

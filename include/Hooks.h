@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Dynamic2HAPI.h"
+
 namespace Hooks {
 
     inline RE::BGSEquipSlot* g_leftHandSlot = nullptr;
@@ -18,6 +20,13 @@ namespace Hooks {
         static inline REL::Relocation<decltype(thunk)> func;
     };
     bool isTwoHanded(RE::TESForm* a_weap);
+    bool isOneHanded(RE::TESForm* a_weap);
+    bool CanEquipWithGrip(RE::Actor* actor, RE::TESObjectWEAP* weapon,
+        DYNAMIC_TWO_HANDED_API::Grip grip, DYNAMIC_TWO_HANDED_API::Hand hand);
+    bool EquipWithGrip(RE::Actor* actor, RE::TESObjectWEAP* weapon, RE::ExtraDataList* extra,
+        DYNAMIC_TWO_HANDED_API::Grip grip, DYNAMIC_TWO_HANDED_API::Hand hand);
+    bool UnequipWithGrip(RE::Actor* actor, RE::TESObjectWEAP* weapon, RE::ExtraDataList* extra,
+        DYNAMIC_TWO_HANDED_API::Grip grip, DYNAMIC_TWO_HANDED_API::Hand hand);
     void RegisterSinksForExistingCombatants();
     void Install();
 
@@ -28,7 +37,7 @@ namespace Hooks {
             return &singleton;
         }
 
-        // Função chamada quando um evento de combate ocorre
+        // Funï¿½ï¿½o chamada quando um evento de combate ocorre
         RE::BSEventNotifyControl ProcessEvent(const RE::TESCombatEvent* a_event,
             RE::BSTEventSource<RE::TESCombatEvent>*) override;
 

@@ -1,7 +1,33 @@
 #include "Hooks.h"
 #include "Settings.h"
 
-auto player = RE::PlayerCharacter::GetSingleton();
+namespace {
+    thread_local bool forcedGripOperation = false;
+
+    constexpr bool IsSupportedConversion(bool isTwoHandedWeapon, bool isOneHandedWeapon,
+        DYNAMIC_TWO_HANDED_API::Grip grip) {
+        return (grip == DYNAMIC_TWO_HANDED_API::Grip::kOneHanded && isTwoHandedWeapon) ||
+            (grip == DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded && isOneHandedWeapon);
+    }
+
+    constexpr bool IsSupportedGripRequest(bool isTwoHandedWeapon, bool isOneHandedWeapon,
+        DYNAMIC_TWO_HANDED_API::Grip grip) {
+        return IsSupportedConversion(isTwoHandedWeapon, isOneHandedWeapon, grip) ||
+            (grip == DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded && isTwoHandedWeapon);
+    }
+
+    static_assert(IsSupportedConversion(true, false, DYNAMIC_TWO_HANDED_API::Grip::kOneHanded));
+    static_assert(IsSupportedConversion(false, true, DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded));
+    static_assert(!IsSupportedConversion(true, false, DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded));
+    static_assert(IsSupportedGripRequest(true, false, DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded));
+
+    constexpr bool MeetsLevel(int actorLevel, int requiredLevel) {
+        return actorLevel >= requiredLevel;
+    }
+
+    static_assert(MeetsLevel(10, 10));
+    static_assert(!MeetsLevel(9, 10));
+}
 
 bool Hooks::isTwoHanded(RE::TESForm* a_weap) {
     if (!a_weap || !a_weap->IsWeapon()) return false;
@@ -10,7 +36,7 @@ bool Hooks::isTwoHanded(RE::TESForm* a_weap) {
     return false;
 }
 
-bool isOneHanded(RE::TESForm* a_weap) {
+bool Hooks::isOneHanded(RE::TESForm* a_weap) {
     if (!a_weap || !a_weap->IsWeapon()) return false;
     auto weap = a_weap->As<RE::TESObjectWEAP>();
     // Verifica explicitamente os tipos de 1H
@@ -36,13 +62,15 @@ void EquipItemWithGripChange(RE::Actor* actor, RE::TESBoundObject* item, RE::BGS
 bool can2h(RE::Actor* actor) {
     if (!actor || !actor->IsHumanoid()) return false;
 
-    // Verifica Nível do Personagem
+    // Verifica Nï¿½vel do Personagem
     int actorLevel = actor->GetLevel();
 
     // Verifica Valor da Skill TwoHanded
     float skillValue = actor->AsActorValueOwner()->GetActorValue(RE::ActorValue::kTwoHanded);
 
-    bool meetsRequirements = (actorLevel >= ModSettings::Settings.minimumLevel && skillValue >= ModSettings::Settings.skillValue);
+    bool meetsRequirements = MeetsLevel(actorLevel, ModSettings::Settings.minimumLevel) &&
+        skillValue >= ModSettings::Settings.skillValue &&
+        ModSettings::HasRequiredPerk(actor, ModSettings::Settings.npcRequiredPerk);
 
     if (!meetsRequirements) {
         logger::debug("  - NPC '{}' falhou nos requisitos: Level {}/{} , Skill 2H {}/{}",
@@ -50,6 +78,107 @@ bool can2h(RE::Actor* actor) {
     }
 
     return meetsRequirements;
+}
+
+namespace {
+    std::int32_t GetItemCount(RE::Actor* actor, RE::TESBoundObject* item) {
+        if (!actor || !item) return 0;
+        const auto inventory = actor->GetInventoryCounts();
+        const auto entry = inventory.find(item);
+        return entry != inventory.end() ? entry->second : 0;
+    }
+
+    RE::BGSEquipSlot* GripSlot(DYNAMIC_TWO_HANDED_API::Grip grip, DYNAMIC_TWO_HANDED_API::Hand hand) {
+        if (grip == DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded) return Hooks::g_twoHandSlot;
+        return hand == DYNAMIC_TWO_HANDED_API::Hand::kLeft ? Hooks::g_leftHandSlot : Hooks::g_rightHandSlot;
+    }
+
+    bool IsEquippedInSlot(RE::Actor* actor, RE::TESObjectWEAP* weapon, RE::BGSEquipSlot* slot) {
+        return actor && weapon && slot && actor->GetEquippedObjectInSlot(slot) == weapon;
+    }
+
+    bool EquipInSlot(RE::Actor* actor, RE::TESObjectWEAP* weapon, RE::ExtraDataList* extra, RE::BGSEquipSlot* slot) {
+        auto* manager = RE::ActorEquipManager::GetSingleton();
+        if (!manager || !actor || !weapon || !slot) return false;
+        auto* originalSlot = weapon->GetEquipSlot();
+        weapon->SetEquipSlot(slot);
+        forcedGripOperation = true;
+        manager->EquipObject(actor, weapon, extra, 1, slot);
+        forcedGripOperation = false;
+        weapon->SetEquipSlot(originalSlot);
+        return true;
+    }
+
+    bool UnequipInSlot(RE::Actor* actor, RE::TESObjectWEAP* weapon, RE::ExtraDataList* extra, RE::BGSEquipSlot* slot) {
+        auto* manager = RE::ActorEquipManager::GetSingleton();
+        if (!manager || !actor || !weapon || !slot) return false;
+        auto* originalSlot = weapon->GetEquipSlot();
+        weapon->SetEquipSlot(slot);
+        forcedGripOperation = true;
+        manager->UnequipObject(actor, weapon, extra, 1, slot, false, true, true, true);
+        forcedGripOperation = false;
+        weapon->SetEquipSlot(originalSlot);
+        return true;
+    }
+}
+
+bool Hooks::CanEquipWithGrip(RE::Actor* actor, RE::TESObjectWEAP* weapon,
+    DYNAMIC_TWO_HANDED_API::Grip grip, DYNAMIC_TWO_HANDED_API::Hand hand) {
+    if (!actor || !weapon || !actor->IsHumanoid()) return false;
+    if (grip == DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded && hand != DYNAMIC_TWO_HANDED_API::Hand::kBoth) return false;
+
+    const bool twoHandedWeapon = isTwoHanded(weapon);
+    const bool oneHandedWeapon = isOneHanded(weapon);
+    const bool keepsNativeTwoHanded = grip == DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded && twoHandedWeapon;
+    const bool convertsTwoToOne = grip == DYNAMIC_TWO_HANDED_API::Grip::kOneHanded && twoHandedWeapon;
+    const bool convertsOneToTwo = grip == DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded && oneHandedWeapon;
+    if (!IsSupportedGripRequest(twoHandedWeapon, oneHandedWeapon, grip)) return false;
+
+    // Explicit API requests take precedence over the normal-equip remapping option.
+    if (keepsNativeTwoHanded) return true;
+
+    if (hand == DYNAMIC_TWO_HANDED_API::Hand::kBoth && grip == DYNAMIC_TWO_HANDED_API::Grip::kOneHanded &&
+        GetItemCount(actor, weapon) < 2) return false;
+
+    if (!actor->IsPlayerRef()) return convertsTwoToOne && can2h(actor);
+    if (!MeetsLevel(actor->GetLevel(), ModSettings::Settings.playerMinimumLevel)) return false;
+    if (convertsTwoToOne) {
+        return ModSettings::Settings.playerTwoHandedAsOneHanded &&
+            ModSettings::HasRequiredPerk(actor, ModSettings::Settings.playerTwoHandedAsOneHandedPerk);
+    }
+    return ModSettings::Settings.playerOneHandedAsTwoHanded &&
+        ModSettings::HasRequiredPerk(actor, ModSettings::Settings.playerOneHandedAsTwoHandedPerk);
+}
+
+bool Hooks::EquipWithGrip(RE::Actor* actor, RE::TESObjectWEAP* weapon, RE::ExtraDataList* extra,
+    DYNAMIC_TWO_HANDED_API::Grip grip, DYNAMIC_TWO_HANDED_API::Hand hand) {
+    if (!CanEquipWithGrip(actor, weapon, grip, hand)) return false;
+
+    if (grip == DYNAMIC_TWO_HANDED_API::Grip::kOneHanded && hand == DYNAMIC_TWO_HANDED_API::Hand::kBoth) {
+        return EquipInSlot(actor, weapon, extra, g_rightHandSlot) &&
+            EquipInSlot(actor, weapon, extra, g_leftHandSlot);
+    }
+
+    auto* target = GripSlot(grip, hand);
+    if (GetItemCount(actor, weapon) <= 1) {
+        for (auto* slot : std::array{ g_rightHandSlot, g_leftHandSlot, g_twoHandSlot }) {
+            if (slot && slot != target && IsEquippedInSlot(actor, weapon, slot)) {
+                UnequipInSlot(actor, weapon, extra, slot);
+            }
+        }
+    }
+    return EquipInSlot(actor, weapon, extra, target);
+}
+
+bool Hooks::UnequipWithGrip(RE::Actor* actor, RE::TESObjectWEAP* weapon, RE::ExtraDataList* extra,
+    DYNAMIC_TWO_HANDED_API::Grip grip, DYNAMIC_TWO_HANDED_API::Hand hand) {
+    if (!actor || !weapon) return false;
+    if (grip == DYNAMIC_TWO_HANDED_API::Grip::kOneHanded && hand == DYNAMIC_TWO_HANDED_API::Hand::kBoth) {
+        const bool right = UnequipInSlot(actor, weapon, extra, g_rightHandSlot);
+        const bool left = UnequipInSlot(actor, weapon, extra, g_leftHandSlot);
+        return right || left;
+    }
+    return UnequipInSlot(actor, weapon, extra, GripSlot(grip, hand));
 }
 
 bool HasOffhandItem(RE::Actor* actor, RE::TESForm* itemBeingEquipped) {
@@ -60,15 +189,15 @@ bool HasOffhandItem(RE::Actor* actor, RE::TESForm* itemBeingEquipped) {
         int count = data.first;
         if (count <= 0) continue;
 
-        // Se o item no inventário for o mesmo que estamos tentando equipar, 
-        // precisamos ter pelo menos 2 dele para sobrar um para a outra mão.
+        // Se o item no inventï¿½rio for o mesmo que estamos tentando equipar,
+        // precisamos ter pelo menos 2 dele para sobrar um para a outra mï¿½o.
         if (item == itemBeingEquipped) {
             count--;
         }
 
         if (count > 0) {
-            if (Hooks::isTwoHanded(item) || isOneHanded(item) || isShield(item)) {
-				logger::debug("  - Item disponível para a mão esquerda encontrado: '{}' (ID: {})", item->GetName(), item->GetFormID());
+            if (Hooks::isTwoHanded(item) || Hooks::isOneHanded(item) || isShield(item)) {
+				logger::debug("  - Item disponï¿½vel para a mï¿½o esquerda encontrado: '{}' (ID: {})", item->GetName(), item->GetFormID());
                 return true;
             }
         }
@@ -78,7 +207,7 @@ bool HasOffhandItem(RE::Actor* actor, RE::TESForm* itemBeingEquipped) {
 
 void CheckForNPC(RE::Actor* npc) {
     if (!npc || npc->IsPlayerRef() || !can2h(npc)) {
-        logger::debug("--- [CheckAndEquipHandle] NPC inválido : '{}'", npc->GetName());
+        logger::debug("--- [CheckAndEquipHandle] NPC invï¿½lido : '{}'", npc->GetName());
             return;
     }
 
@@ -86,7 +215,7 @@ void CheckForNPC(RE::Actor* npc) {
     if (!equipManager) {
         return;
     }
-	logger::debug("--- [CheckAndEquipHandle] Início da verificação para NPC: '{}' (ID: {}) ---", npc->GetName(), npc->GetFormID());
+	logger::debug("--- [CheckAndEquipHandle] Inï¿½cio da verificaï¿½ï¿½o para NPC: '{}' (ID: {}) ---", npc->GetName(), npc->GetFormID());
     // 1. Obter o status atual do equipamento
     auto equippedItemL = npc->GetEquippedObjectInSlot(Hooks::g_leftHandSlot);
     auto equippedItemR = npc->GetEquippedObjectInSlot(Hooks::g_rightHandSlot);
@@ -96,11 +225,11 @@ void CheckForNPC(RE::Actor* npc) {
     bool isL_2H = Hooks::isTwoHanded(equippedItemL);
     bool is2H_2H = Hooks::isTwoHanded(equippedItem2H);
 
-    // 2. Verificações de saída antecipada
+    // 2. Verificaï¿½ï¿½es de saï¿½da antecipada
     if (isL_2H && isR_2H) {
-        //logger::info("  - Status: NPC já está empunhando duas armas de duas mãos (Dual 2H).");
-        //logger::info("--- [CheckAndEquipHandle] Fim da verificação ---");
-        return;  // Já está em dual wielding 2H
+        //logger::info("  - Status: NPC jï¿½ estï¿½ empunhando duas armas de duas mï¿½os (Dual 2H).");
+        //logger::info("--- [CheckAndEquipHandle] Fim da verificaï¿½ï¿½o ---");
+        return;  // Jï¿½ estï¿½ em dual wielding 2H
     }
 
     if (isR_2H && equippedItemL != nullptr) {
@@ -108,13 +237,13 @@ void CheckForNPC(RE::Actor* npc) {
         if (equippedItemL) {
             leftItemName = equippedItemL->GetName();
         }
-        //logger::info("  - Status: NPC já está empunhando 2H na direita e '{}' na esquerda. Não interferir.",leftItemName);
-        //logger::info("--- [CheckAndEquipHandle] Fim da verificação ---");
+        //logger::info("  - Status: NPC jï¿½ estï¿½ empunhando 2H na direita e '{}' na esquerda. Nï¿½o interferir.",leftItemName);
+        //logger::info("--- [CheckAndEquipHandle] Fim da verificaï¿½ï¿½o ---");
         return;
     }
 
-    // 4. Escanear inventário para itens NÃO EQUIPADOS
-    /*logger::info("  - Escaneando inventário...");*/
+    // 4. Escanear inventï¿½rio para itens Nï¿½O EQUIPADOS
+    /*logger::info("  - Escaneando inventï¿½rio...");*/
     std::vector<RE::TESObjectWEAP*> available2H;
     std::vector<RE::TESObjectWEAP*> available1H;
     std::vector<RE::TESObjectARMO*> availableShields;
@@ -136,7 +265,7 @@ void CheckForNPC(RE::Actor* npc) {
             if (Hooks::isTwoHanded(item)) {
                 available2H.push_back(item->As<RE::TESObjectWEAP>());
             }
-            else if (isOneHanded(item)) {
+            else if (Hooks::isOneHanded(item)) {
                 available1H.push_back(item->As<RE::TESObjectWEAP>());
             }
             else if (isShield(item)) {
@@ -146,46 +275,49 @@ void CheckForNPC(RE::Actor* npc) {
     }
 
     int total2HCount = (int)available2H.size() + (isR_2H ? 1 : 0) + (isL_2H ? 1 : 0) + (is2H_2H ? 1 : 0);
-	logger::debug("  - NPC possui {} armas de 2 mãos disponíveis no inventário (incluindo as equipadas).", total2HCount);
-    // Se ele só tem uma 2H E não tem absolutamente nada para a mão esquerda (1H, Escudo ou algo já equipado)
+	logger::debug("  - NPC possui {} armas de 2 mï¿½os disponï¿½veis no inventï¿½rio (incluindo as equipadas).", total2HCount);
+    // Se ele sï¿½ tem uma 2H E nï¿½o tem absolutamente nada para a mï¿½o esquerda (1H, Escudo ou algo jï¿½ equipado)
     bool nothingForLeftHand = available1H.empty() && availableShields.empty();
-	logger::debug("    - Itens disponíveis para a mão esquerda: 1H = {}, Escudos = {}.", available1H.size(), availableShields.size());
+	logger::debug("    - Itens disponï¿½veis para a mï¿½o esquerda: 1H = {}, Escudos = {}.", available1H.size(), availableShields.size());
     if (total2HCount <= 1 && nothingForLeftHand) {
-        logger::debug("  - Status: NPC só possui uma 2H e nada para a mão esquerda. Mantendo equipamento original.");
+        logger::debug("  - Status: NPC sï¿½ possui uma 2H e nada para a mï¿½o esquerda. Mantendo equipamento original.");
         return;
     }
 
     RE::TESObjectWEAP* weaponForRight = nullptr;
 
-    // PASSO 1: Garantir Arma de 2 Mãos na Direita
+    // PASSO 1: Garantir Arma de 2 Mï¿½os na Direita
     if (Hooks::isTwoHanded(equippedItemR)) {
         weaponForRight = equippedItemR->As<RE::TESObjectWEAP>();
     }
     else if (Hooks::isTwoHanded(equippedItem2H)) {
-        // Tem uma 2H no slot vanilla: MOVE para a mão direita
+        // Tem uma 2H no slot vanilla: MOVE para a mï¿½o direita
         weaponForRight = equippedItem2H->As<RE::TESObjectWEAP>();
         equipManager->UnequipObject(npc, weaponForRight, nullptr, 1, Hooks::g_twoHandSlot, false, true, true);
-        EquipItemWithGripChange(npc, weaponForRight, Hooks::g_rightHandSlot);
+        Hooks::EquipWithGrip(npc, weaponForRight, nullptr,
+            DYNAMIC_TWO_HANDED_API::Grip::kOneHanded, DYNAMIC_TWO_HANDED_API::Hand::kRight);
     }
     else if (!available2H.empty()) {
         weaponForRight = available2H[0];
-        available2H.erase(available2H.begin()); // Removemos pois será usada
-        EquipItemWithGripChange(npc, weaponForRight, Hooks::g_rightHandSlot);
+        available2H.erase(available2H.begin()); // Removemos pois serï¿½ usada
+        Hooks::EquipWithGrip(npc, weaponForRight, nullptr,
+            DYNAMIC_TWO_HANDED_API::Grip::kOneHanded, DYNAMIC_TWO_HANDED_API::Hand::kRight);
     }
 
-    // Se não conseguimos uma 2H para a direita, paramos a lógica de "Dual 2H" aqui
+    // Se nï¿½o conseguimos uma 2H para a direita, paramos a lï¿½gica de "Dual 2H" aqui
     if (!weaponForRight) return;
 
-    // PASSO 2: Tentar Arma de 2 Mãos na Esquerda
+    // PASSO 2: Tentar Arma de 2 Mï¿½os na Esquerda
     bool isLeftAlready2H = Hooks::isTwoHanded(equippedItemL);
 
     if (!isLeftAlready2H) {
         if (!available2H.empty()) {
-            // Prioridade: Equipar segunda arma de 2 mãos
-            EquipItemWithGripChange(npc, available2H[0], Hooks::g_leftHandSlot);
+            // Prioridade: Equipar segunda arma de 2 mï¿½os
+            Hooks::EquipWithGrip(npc, available2H[0], nullptr,
+                DYNAMIC_TWO_HANDED_API::Grip::kOneHanded, DYNAMIC_TWO_HANDED_API::Hand::kLeft);
         }
         else if (equippedItemL == nullptr) {
-            // Fallback: Apenas se a mão esquerda estiver vazia
+            // Fallback: Apenas se a mï¿½o esquerda estiver vazia
             if (!available1H.empty()) {
                 EquipItemWithGripChange(npc, available1H[0], Hooks::g_leftHandSlot);
             }
@@ -220,25 +352,25 @@ RE::BSEventNotifyControl Hooks::NpcCombatTracker::ProcessEvent(const RE::TESComb
 }
 
 void Hooks::RegisterSinksForExistingCombatants() {
-    SKSE::log::info("[NpcCombatTracker] Verificando NPCs já em combate após carregar o jogo...");
+    SKSE::log::info("[NpcCombatTracker] Verificando NPCs jï¿½ em combate apï¿½s carregar o jogo...");
 
     auto* processLists = RE::ProcessLists::GetSingleton();
     if (!processLists) {
-        SKSE::log::warn("[NpcCombatTracker] Não foi possível obter ProcessLists.");
+        SKSE::log::warn("[NpcCombatTracker] Nï¿½o foi possï¿½vel obter ProcessLists.");
         return;
     }
 
-    // Itera sobre todos os atores que estão "ativos" no jogo
+    // Itera sobre todos os atores que estï¿½o "ativos" no jogo
     for (auto& actorHandle : processLists->highActorHandles) {
         if (auto actor = actorHandle.get().get()) {
-            // A função IsInCombat() nos diz se o ator já está em um estado de combate
-            if (actor != player) {
+            // A funï¿½ï¿½o IsInCombat() nos diz se o ator jï¿½ estï¿½ em um estado de combate
+            if (!actor->IsPlayerRef()) {
                 CheckForNPC(actor);
             }
 
         }
     }
-    SKSE::log::info("[NpcCombatTracker] Verificação concluída.");
+    SKSE::log::info("[NpcCombatTracker] Verificaï¿½ï¿½o concluï¿½da.");
 }
 
 void Hooks::Install()
@@ -259,11 +391,28 @@ void Hooks::Install()
 void Hooks::Equip2H::thunk(std::int64_t* a, RE::Actor* a_actor, RE::TESForm* a_form, std::int64_t* extraData,
     int count, std::int64_t* equipSlot, char queueEquip, char forceEquip,
     char playSounds, char applyNow) {
-    if (!a_actor || a_actor->IsPlayerRef()) {
+    if (forcedGripOperation) {
+        return func(a, a_actor, a_form, extraData, count, equipSlot, queueEquip, forceEquip, playSounds, applyNow);
+    }
+    if (!a_actor) {
+        return func(a, a_actor, a_form, extraData, count, equipSlot, queueEquip, forceEquip, playSounds, applyNow);
+    }
+    if (a_actor->IsPlayerRef()) {
+        auto* weapon = a_form ? a_form->As<RE::TESObjectWEAP>() : nullptr;
+        const auto hand = ModSettings::Settings.playerNormalTwoHandedHand == 1 ?
+            DYNAMIC_TWO_HANDED_API::Hand::kLeft : DYNAMIC_TWO_HANDED_API::Hand::kRight;
+        if (weapon && ModSettings::Settings.playerNormalTwoHandedAsOneHanded &&
+            CanEquipWithGrip(a_actor, weapon, DYNAMIC_TWO_HANDED_API::Grip::kOneHanded, hand)) {
+            auto* originalSlot = weapon->GetEquipSlot();
+            weapon->SetEquipSlot(hand == DYNAMIC_TWO_HANDED_API::Hand::kLeft ? g_leftHandSlot : g_rightHandSlot);
+            func(a, a_actor, a_form, extraData, count, equipSlot, false, true, playSounds, true);
+            weapon->SetEquipSlot(originalSlot);
+            return;
+        }
         return func(a, a_actor, a_form, extraData, count, equipSlot, queueEquip, forceEquip, playSounds, applyNow);
     }
         if (Hooks::isTwoHanded(a_form)) {
-            // Usa a função can2h que já criamos com os requisitos
+            // Usa a funï¿½ï¿½o can2h que jï¿½ criamos com os requisitos
             if (can2h(a_actor) && HasOffhandItem(a_actor, a_form)) {
                 auto weapon = a_form->As<RE::TESObjectWEAP>();
                 auto originalSlot = weapon->GetEquipSlot();
@@ -281,9 +430,14 @@ void Hooks::Equip2H::thunk(std::int64_t* a, RE::Actor* a_actor, RE::TESForm* a_f
 
 std::int64_t Hooks::Unequip2H::thunk(std::int64_t* a, RE::Actor* a_actor, RE::TESForm* a_form,
     std::int64_t* extraData) {
+    if (forcedGripOperation) {
+        return func(a, a_actor, a_form, extraData);
+    }
+    if (!a_actor) {
+        return func(a, a_actor, a_form, extraData);
+    }
     RE::TESObjectWEAP* weapon = nullptr;
     RE::BGSEquipSlot* originalSlot = nullptr;
-    RE::TESBoundObject* a_bound = a_form ? a_form->As<RE::TESBoundObject>() : nullptr;
     // 1. VERIFICAR E ALTERAR (ANTES de chamar func)
     if (Hooks::isTwoHanded(a_form)) {
         weapon = a_form->As<RE::TESObjectWEAP>();
@@ -297,6 +451,11 @@ std::int64_t Hooks::Unequip2H::thunk(std::int64_t* a, RE::Actor* a_actor, RE::TE
         else {
             weapon->SetEquipSlot(Hooks::g_rightHandSlot);
         }
+    } else if (Hooks::isOneHanded(a_form) && a_actor &&
+        a_actor->GetEquippedObjectInSlot(Hooks::g_twoHandSlot) == a_form) {
+        weapon = a_form->As<RE::TESObjectWEAP>();
+        originalSlot = weapon->GetEquipSlot();
+        weapon->SetEquipSlot(Hooks::g_twoHandSlot);
     }
 
     std::int64_t result = func(a, a_actor, a_form, extraData);

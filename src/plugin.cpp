@@ -1,7 +1,38 @@
 #include "logger.h"
 #include "Events.h"
 #include "Settings.h"
+#include "Manager.h"
 namespace fs = std::filesystem;
+
+namespace {
+    bool hasDFG = false;
+
+    class DynamicFormsGeneratorListener : public RE::BSTEventSink<SKSE::ModCallbackEvent> {
+    public:
+        static DynamicFormsGeneratorListener* GetSingleton() {
+            static DynamicFormsGeneratorListener singleton;
+            return std::addressof(singleton);
+        }
+
+        void Register() {
+            if (auto* dispatcher = SKSE::GetModCallbackEventSource()) dispatcher->AddEventSink(this);
+        }
+
+        RE::BSEventNotifyControl ProcessEvent(const SKSE::ModCallbackEvent* event,
+            RE::BSTEventSource<SKSE::ModCallbackEvent>*) override {
+            if (!event) return RE::BSEventNotifyControl::kContinue;
+            const std::string_view name = event->eventName.c_str();
+            if (name == "DynamicFormsGeneratorLoaded") {
+                Manager::GetSingleton()->PopulateAllLists();
+                ModSettings::LoadSE();
+            } else if (name == "DynamicFormsGeneratorUpdated") {
+                Manager::GetSingleton()->RefreshLists(event->strArg.c_str());
+                ModSettings::LoadSE();
+            }
+            return RE::BSEventNotifyControl::kContinue;
+        }
+    };
+}
 
 template <typename T>
 void RegisterCondition() {
@@ -27,7 +58,9 @@ void RegisterCondition() {
 
 void OnMessage(SKSE::MessagingInterface::Message* message) {
     if (message->type == SKSE::MessagingInterface::kPostLoad) {
-        OAR_API::Conditions::GetAPI();                                               
+        hasDFG = GetModuleHandleA("DynamicFormsGenerator.dll") != nullptr;
+        logger::info("Dynamic Forms Generator {}", hasDFG ? "found" : "not found; using loaded perks only");
+        OAR_API::Conditions::GetAPI();
         extern OAR_API::Conditions::IConditionsInterface* g_oarConditionsInterface; 
 
         if (g_oarConditionsInterface)
@@ -44,6 +77,7 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         Hooks::g_leftHandSlot = dataHandler->LookupForm<RE::BGSEquipSlot>(0x13f43, "Skyrim.esm");
         Hooks::g_twoHandSlot = dataHandler->LookupForm<RE::BGSEquipSlot>(0x13f45, "Skyrim.esm");
         Hooks::g_shield = dataHandler->LookupForm<RE::BGSEquipSlot>(0x141E8, "Skyrim.esm");
+        Manager::GetSingleton()->PopulateAllLists();
         ModSettings::LoadSE();
         ModSettings::Register();
     }
@@ -61,8 +95,9 @@ SKSEPluginLoad(const SKSE::LoadInterface *skse) {
 
     SetupLog();
     logger::info("Plugin loaded");
-    Hooks::Install();
     SKSE::Init(skse);
+    Hooks::Install();
+    DynamicFormsGeneratorListener::GetSingleton()->Register();
     SKSE::GetMessagingInterface()->RegisterListener(OnMessage);
     return true;
 }
