@@ -1,0 +1,24 @@
+{
+  "menu": {
+    "section": "Dynamic Two-Handed",
+    "player_settings": "Player Settings",
+    "npc_settings": "NPC Settings",
+    "none": "None",
+    "grip_requirements": "Grip Requirements",
+    "minimum_level": "Minimum Level:",
+    "grip_level_note": "Required for both grip conversions.",
+    "two_h_as_one_h": "2H as 1H",
+    "enable_two_h_as_one_h": "Enable 2H as 1H",
+    "required_perk": "Required Perk",
+    "dual_two_h": "Dual 2H",
+    "dual_note": "Also requires the 2H as 1H level and perk. Applies to API equip too.",
+    "one_h_as_two_h": "1H as 2H",
+    "enable_one_h_as_two_h": "Enable 1H as 2H",
+    "normal_equip": "Normal Equip",
+    "normal_two_h_one_hand": "Equip 2H in one hand",
+    "normal_second_equip": "Second equip switches to 2H",
+    "normal_equip_note": "Normal Skyrim equip only; explicit API commands are unchanged.",
+    "npc_dual_requirements": "Dual 2H Requirements",
+    "minimum_two_h_skill": "Minimum 2H Skill:"
+  }
+}

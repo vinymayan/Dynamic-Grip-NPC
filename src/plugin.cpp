@@ -2,6 +2,7 @@
 #include "Events.h"
 #include "Settings.h"
 #include "Manager.h"
+#include "InventoryUI.h"
 namespace fs = std::filesystem;
 
 namespace {
@@ -77,9 +78,22 @@ void OnMessage(SKSE::MessagingInterface::Message* message) {
         Hooks::g_leftHandSlot = dataHandler->LookupForm<RE::BGSEquipSlot>(0x13f43, "Skyrim.esm");
         Hooks::g_twoHandSlot = dataHandler->LookupForm<RE::BGSEquipSlot>(0x13f45, "Skyrim.esm");
         Hooks::g_shield = dataHandler->LookupForm<RE::BGSEquipSlot>(0x141E8, "Skyrim.esm");
+
+        logger::debug(
+            "[D2H EquipDebug] Equip slots loaded: Right={:08X} ptr={} Left={:08X} ptr={} TwoHand={:08X} ptr={} Shield={:08X} ptr={}",
+            Hooks::g_rightHandSlot ? Hooks::g_rightHandSlot->GetFormID() : 0,
+            static_cast<const void*>(Hooks::g_rightHandSlot),
+            Hooks::g_leftHandSlot ? Hooks::g_leftHandSlot->GetFormID() : 0,
+            static_cast<const void*>(Hooks::g_leftHandSlot),
+            Hooks::g_twoHandSlot ? Hooks::g_twoHandSlot->GetFormID() : 0,
+            static_cast<const void*>(Hooks::g_twoHandSlot),
+            Hooks::g_shield ? Hooks::g_shield->GetFormID() : 0,
+            static_cast<const void*>(Hooks::g_shield));
+
         Manager::GetSingleton()->PopulateAllLists();
         ModSettings::LoadSE();
         ModSettings::Register();
+        InventoryUI::Register();
     }
     if (message->type == SKSE::MessagingInterface::kNewGame || message->type == SKSE::MessagingInterface::kPostLoadGame) {
         auto* NpcCycle = RE::ScriptEventSourceHolder::GetSingleton();
