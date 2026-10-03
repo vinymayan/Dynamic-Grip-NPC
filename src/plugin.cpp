@@ -3,6 +3,7 @@
 #include "Settings.h"
 #include "Manager.h"
 #include "InventoryUI.h"
+#include "GripInput.h"
 namespace fs = std::filesystem;
 
 namespace {
@@ -58,6 +59,7 @@ void RegisterCondition() {
 }
 
 void OnMessage(SKSE::MessagingInterface::Message* message) {
+    GripInput::HandleMessage(message);
     if (message->type == SKSE::MessagingInterface::kPostLoad) {
         hasDFG = GetModuleHandleA("DynamicFormsGenerator.dll") != nullptr;
         logger::info("Dynamic Forms Generator {}", hasDFG ? "found" : "not found; using loaded perks only");
@@ -111,6 +113,7 @@ SKSEPluginLoad(const SKSE::LoadInterface *skse) {
     logger::info("Plugin loaded");
     SKSE::Init(skse);
     Hooks::Install();
+    GripInput::RegisterListener();
     DynamicFormsGeneratorListener::GetSingleton()->Register();
     SKSE::GetMessagingInterface()->RegisterListener(OnMessage);
     return true;

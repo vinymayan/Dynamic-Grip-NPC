@@ -1,5 +1,6 @@
 #include "Settings.h"
 #include "Manager.h"
+#include "GripInput.h"
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -284,6 +285,10 @@ namespace ModSettings {
         return result;
     }
 
+    const char* GetInputLoc(const char* key, const char* fallback) {
+        return GetLoc(key, fallback);
+    }
+
     void PlayerMenu() {
         bool changed = false;
 
@@ -348,6 +353,11 @@ namespace ModSettings {
             }
             ImGuiMCP::TextWrapped("%s", GetLoc("menu.normal_equip_note", "Normal Skyrim equip only; explicit API commands are unchanged."));
             ImGuiMCP::Unindent();
+        }
+
+        if (GripInput::IsAvailable()) {
+            ImGuiMCP::Spacing();
+            if (ImGuiMCP::CollapsingHeader(GetLoc("input.section", "Inputs"))) GripInput::DrawMenu();
         }
 
         if (changed) SaveSe();

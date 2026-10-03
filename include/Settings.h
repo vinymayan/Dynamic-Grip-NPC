@@ -32,6 +32,7 @@ namespace ModSettings {
 
     void ModMenu();
     void PlayerMenu();
+    const char* GetInputLoc(const char* key, const char* fallback);
     void Register();
     void LoadSE();
     void SaveSe();

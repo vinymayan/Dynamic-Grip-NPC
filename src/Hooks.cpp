@@ -34,13 +34,15 @@ namespace {
     constexpr bool IsSupportedGripRequest(bool isTwoHandedWeapon, bool isOneHandedWeapon,
         DYNAMIC_TWO_HANDED_API::Grip grip) {
         return IsSupportedConversion(isTwoHandedWeapon, isOneHandedWeapon, grip) ||
-            (grip == DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded && isTwoHandedWeapon);
+            (grip == DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded && isTwoHandedWeapon) ||
+            (grip == DYNAMIC_TWO_HANDED_API::Grip::kOneHanded && isOneHandedWeapon);
     }
 
     static_assert(IsSupportedConversion(true, false, DYNAMIC_TWO_HANDED_API::Grip::kOneHanded));
     static_assert(IsSupportedConversion(false, true, DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded));
     static_assert(!IsSupportedConversion(true, false, DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded));
     static_assert(IsSupportedGripRequest(true, false, DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded));
+    static_assert(IsSupportedGripRequest(false, true, DYNAMIC_TWO_HANDED_API::Grip::kOneHanded));
 
     constexpr bool MeetsLevel(int actorLevel, int requiredLevel) {
         return actorLevel >= requiredLevel;
@@ -365,7 +367,9 @@ namespace {
         logger::debug(
             "[D2H EquipDebug] EquipInSlot CALL ActorEquipManager::EquipObject forcedGripOperation=true slot={}",
             KnownSlotName(slot));
-        manager->EquipObject(actor, weapon, resolvedExtra, 1, slot);
+        // Complete the equip while the requested form slot and explicit-grip
+        // guard are still active; queued work would outlive both below.
+        manager->EquipObject(actor, weapon, resolvedExtra, 1, slot, false, false, true, true);
         logger::debug("[D2H EquipDebug] EquipInSlot RETURN ActorEquipManager::EquipObject");
         forcedGripOperation = previousForcedGripOperation;
         weapon->SetEquipSlot(originalSlot);
@@ -463,6 +467,7 @@ bool Hooks::CanEquipWithGrip(RE::Actor* actor, RE::TESObjectWEAP* weapon,
 
     const bool twoHandedWeapon = isTwoHanded(weapon);
     const bool oneHandedWeapon = isOneHanded(weapon);
+    const bool keepsNativeOneHanded = grip == DYNAMIC_TWO_HANDED_API::Grip::kOneHanded && oneHandedWeapon;
     const bool keepsNativeTwoHanded = grip == DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded && twoHandedWeapon;
     const bool convertsTwoToOne = grip == DYNAMIC_TWO_HANDED_API::Grip::kOneHanded && twoHandedWeapon;
     const bool convertsOneToTwo = grip == DYNAMIC_TWO_HANDED_API::Grip::kTwoHanded && oneHandedWeapon;
@@ -482,6 +487,9 @@ bool Hooks::CanEquipWithGrip(RE::Actor* actor, RE::TESObjectWEAP* weapon,
     }
 
     // Explicit API requests take precedence over the normal-equip remapping option.
+    // Returning a native 1H weapon from TwoHand to one hand needs no conversion permission.
+    if (keepsNativeOneHanded) return hand != DYNAMIC_TWO_HANDED_API::Hand::kBoth;
+
     if (keepsNativeTwoHanded) {
         logger::debug(
             "[D2H EquipDebug] CanEquipWithGrip ACCEPT native 2H request. normal2HAs1H={} is ignored for explicit TwoHanded",
